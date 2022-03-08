@@ -1,69 +1,66 @@
-from environs import Env
+import os
 import lgsvl
-from lgsvl import Vector
+import copy
+from environs import Env
 
 env = Env()
-
 sim = lgsvl.Simulator(env.str("LGSVL__SIMULATOR_HOST", lgsvl.wise.SimulatorSettings.simulator_host),
                       env.int("LGSVL__SIMULATOR_PORT", lgsvl.wise.SimulatorSettings.simulator_port))
 
+# BorregasAve default map must be added to your personal library
+if sim.current_scene == "bd77ac3b-fbc3-41c3-a806-25915c777022":  # Highway map
+    sim.reset()
+else:
+    sim.load("bd77ac3b-fbc3-41c3-a806-25915c777022")
 
-def main():
-    print("--- START OF SIMULATION --- ")
-    if sim.current_scene == "bd77ac3b-fbc3-41c3-a806-25915c777022":  # Highway map
-        sim.reset()
-    else:
-        sim.load("bd77ac3b-fbc3-41c3-a806-25915c777022")
+spawns = sim.get_spawn()
+forward = lgsvl.utils.transform_to_forward(spawns[0])
+right = lgsvl.utils.transform_to_right(spawns[0])
 
-    try:
-        state_ego = lgsvl.AgentState()
-        state_ego.transform.position = lgsvl.Vector(-385, 35, 105)
-        state_ego.transform.rotation.y = -90
+# EGO
+state = lgsvl.AgentState()
+state.transform = spawns[0]
+ego_state = copy.deepcopy(state)
+ego_state.transform.position += 50 * forward
+ego_state.transform.position -= 3 * right
 
-        state_npc = lgsvl.AgentState()
-        state_npc.transform.position = lgsvl.Vector(-390, 35, 105)
-        state_npc.transform.rotation.y = -90
+# The Lincoln2017MKZ default vehicle must be added to your vehicle library
+a = sim.add_agent(os.environ.get("LGSVL__VEHICLE_0"), lgsvl.AgentType.EGO, ego_state)
 
-        npc = sim.add_agent("Sedan", lgsvl.AgentType.NPC, state_npc)
-        ego = sim.add_agent(env.str("LGSVL__VEHICLE_0", lgsvl.wise.DefaultAssets.ego_lincoln2017mkz_apollo5),
-                            lgsvl.AgentType.EGO, state_ego)
+# NPC
+npc_state = copy.deepcopy(state)
+npc_state.transform.position += 10 * forward
+npc = sim.add_agent("Sedan", lgsvl.AgentType.NPC, npc_state)
 
-        print("Current time = ", sim.current_time)
-        print("Current frame = ", sim.current_frame)
+vehicles = {
+  a: "EGO",
+  npc: "Sedan",
+}
 
-        input("Press Enter to start driving")
+# This block creates the list of waypoints that the NPC will follow
+# Each waypoint is an position vector paired with the speed that the NPC will drive to it
+waypoints = []
+x_max = 2
+z_delta = 12
 
-        def on_lane_change(agent):
-            print(f'{agent} changed lane')
+layer_mask = 0
+layer_mask |= 1 << 0 # 0 is the layer for the road (default)
 
+for i in range(20):
+  speed = 24# if i % 2 == 0 else 12
+  px = 0
+  pz = (i + 1) * z_delta
+  # Waypoint angles are input as Euler angles (roll, pitch, yaw)
+  angle = spawns[0].rotation
+  # Raycast the points onto the ground because BorregasAve is not flat
+  hit = sim.raycast(spawns[0].position + pz * forward, lgsvl.Vector(0,-1,0), layer_mask)
 
-        # turn all of traffic lights green
-        for controllable in sim.get_controllables():
-            if controllable.type == "signal":
-                controllable.control("green=1;loop")
+  # NPC will wait for 1 second at each waypoint
+  wp = lgsvl.DriveWaypoint(hit.point, speed, angle, 1)
+  waypoints.append(wp)
 
+# The NPC needs to be given the list of waypoints.
+# A bool can be passed as the 2nd argument that controls whether or not the NPC loops over the waypoints (default false)
+npc.follow(waypoints)
 
-        # VehicleControl objects can only be applied to EGO vehicles
-        # You can set the steering (-1 ... 1), throttle and braking (0 ... 1), handbrake and reverse (bool)
-        npc.follow_closest_lane(True, 10)
-        npc.on_lane_change(on_lane_change)
-
-        # Change Weather
-        sim.weather = lgsvl.WeatherState(rain=0.8, fog=0, wetness=0, cloudiness=0, damage=0)
-
-
-        for sim.current_frame in range (0, 1000):
-            sim.run()
-            print(npc.state.position)
-
-
-    finally:
-        print("END SIMULATION")
-
-
-if __name__ == "__main__":
-    try:
-        main()
-    except KeyboardInterrupt:
-        print(' - Exited by user.')
-
+sim.run(20)
